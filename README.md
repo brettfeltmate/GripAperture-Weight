@@ -8,18 +8,10 @@ A python-based motion-capture (Optitrack) paradigm, comparing grip-aperture (of 
 In pt. 1, target reveal (an illumination of its placeholder) is triggered when the reaching motion exceeds a velocity threshold.
 
 Running this paradigm requires that you have:
+
 - An Optitrack motion-capture system
 - A pair of occlusion goggles (i.e., PLATO)
 - An arduino board (for controlling goggles)
 - KLibs (python-based experiment development framework)
 
-As it stands, an Optitrack system is a hard requirement. In theory both the brand of goggles or arduino board shouldn't matter too much, though the code would need to be adapted accordingly. KLibs is also necessary. 
-
-##### Todo:
-- [ ] Test script
-- [ ] Implement some sort of movement insurance, either:
-    - [ ] Min velocity
-    - [ ] Tighter MT cutoffs
-- [ ] Depending on the above, pull sensible defaults from extant lit
-- [ ] Implement movement end-zones
-    - [ ] Use these to mark movement end
+As it stands, an Optitrack system is a hard requirement. In theory both the brand of goggles or arduino board shouldn't matter too much, though the code would need to be adapted accordingly. KLibs is also necessary.
