@@ -15,14 +15,13 @@ from get_key_state import get_key_state  # type: ignore[import]
 import klibs
 from klibs import P
 from klibs.KLAudio import Tone
-from klibs.KLConstants import STROKE_CENTER, STROKE_INNER
 from klibs.KLCommunication import message
 from klibs.KLExceptions import TrialException
 from klibs.KLGraphics import KLDraw as kld
 from klibs.KLGraphics import blit, fill, flip, clear
 from klibs.KLUserInterface import any_key, key_pressed, ui_request, smart_sleep
 from klibs.KLUtilities import hide_mouse_cursor, line_segment_len, pump
-from klibs.KLBoundary import RectangleBoundary, BoundarySet
+from klibs.KLBoundary import AnnulusBoundary, BoundarySet
 from klibs.KLTime import CountDown
 
 from natnetclient_rough import NatNetClient  # type: ignore[import]
@@ -40,10 +39,12 @@ PURP = (255, 0, 255, 255)
 # anti-typo protections
 LEFT = 'left'
 RIGHT = 'right'
-WIDE = 'wide'
-TALL = 'tall'
+SMALL = 'small'
+LARGE = 'large'
 TARGET = 'target'
 DISTRACTOR = 'distractor'
+OFFSET = 'offset'
+BRIM = 'brim'
 GBYK = 'GBYK'
 KBYG = 'KBYG'
 GO_SIGNAL = 'go_signal'
@@ -65,10 +66,13 @@ class GripApertureRedux(klibs.Experiment):
         # sizings
         self.px_cm = int(P.ppi / 2.54)
 
-        self.px_wide = P.cm_wide * self.px_cm  # type: ignore[known-attribute]
-        self.px_tall = P.cm_tall * self.px_cm  # type: ignore[known-attribute]
-        self.px_brim = P.cm_brim * self.px_cm  # type: ignore[known-attribute]
-        self.px_offset = P.cm_offset * self.px_cm  # type: ignore[known-attribute]
+        self.sizes = {
+            SMALL: P.cm_small * self.px_cm,  # type: ignore[known-attribute]
+            MEDIUM: P.cm_medium * self.px_cm,  # type: ignore[known-attribute]
+            LARGE: P.cm_large * self.px_cm,  # type: ignore[known-attribute]
+            BRIM: P.cm_brim * self.px_cm,  # type: ignore[known-attribute]
+            OFFSET: P.cm_offset * self.px_cm,  # type: ignore[known-attribute]
+        }
 
         # manages stream
         self.nnc = NatNetClient()
@@ -83,74 +87,23 @@ class GripApertureRedux(klibs.Experiment):
         # plato goggles controller
         self.goggles = serial.Serial(port=P.arduino_comport, baudrate=P.baudrate)  # type: ignore[known-attribute]
 
-        # 12cm centre-to-centre; aligned hoizontally along screen centre
+        # 12cm centre-to-centre; aligned hoizonlargey along screen centre
         self.locs = {
-            LEFT: (P.screen_c[0] - self.px_offset, P.screen_c[1]),
-            RIGHT: (P.screen_c[0] + self.px_offset, P.screen_c[1]),
-        }
-
-        self.shapes = {
-            WIDE: (self.px_wide, self.px_tall),
-            TALL: (self.px_tall, self.px_wide),
+            LEFT: (P.screen_c[0] - self.sizes[OFFSET], P.screen_c[1]),
+            RIGHT: (P.screen_c[0] + self.sizes[OFFSET], P.screen_c[1]),
         }
 
         # visual placeholders
         self.placeholders = {
             item: {
-                shape: kld.Rectangle(
-                    *self.shapes[shape],
-                    stroke=[
-                        self.px_brim,
-                        WHITE if item == TARGET else GRUE,
-                        STROKE_CENTER,
-                    ],
+                size: kld.Annulus(
+                    diameter=self.sizes[size] + self.sizes[BRIM],
+                    thickness=self.sizes[BRIM],
                     fill=WHITE if item == TARGET else GRUE,
                 )
-                for shape in (WIDE, TALL)
+                for size in (SMALL, LARGE)
             }
             for item in (TARGET, DISTRACTOR)
-        }
-
-        # for visualizing hand pos during debug
-        if P.development_mode:
-            self.cursor = kld.Annulus(
-                self.px_cm * 2,
-                self.px_cm // 5,
-                stroke=[self.px_cm // 10, RED, STROKE_INNER],
-                fill=RED,
-            )
-            self.tl_left = kld.Annulus(
-                self.px_cm,
-                self.px_cm // 5,
-                stroke=[self.px_cm // 10, GREEN, STROKE_INNER],
-                fill=GREEN,
-            )
-            self.br_left = kld.Annulus(
-                self.px_cm,
-                self.px_cm // 5,
-                stroke=[self.px_cm // 10, BLUE, STROKE_INNER],
-                fill=BLUE,
-            )
-            self.tl_right = kld.Annulus(
-                self.px_cm,
-                self.px_cm // 5,
-                stroke=[self.px_cm // 10, RED, STROKE_INNER],
-                fill=RED,
-            )
-            self.br_right = kld.Annulus(
-                self.px_cm,
-                self.px_cm // 5,
-                stroke=[self.px_cm // 10, PURP, STROKE_INNER],
-                fill=PURP,
-            )
-
-        # pre-calc object boundary points
-        self.pts = {
-            side: {
-                shape: self.calc_boundary_pts(side, shape)
-                for shape in (WIDE, TALL)
-            }
-            for side in (LEFT, RIGHT)
         }
 
         self.go_signal = Tone(
@@ -232,16 +185,18 @@ class GripApertureRedux(klibs.Experiment):
         self.distractor_loc = LEFT if self.target_loc == RIGHT else RIGHT  # type: ignore[known-attribute]
 
         # if hand position falls within one of these, presume object within it has been grasped
-        self.target_boundary = RectangleBoundary(
+        self.target_boundary = AnnulusBoundary(
             label=TARGET,
-            p1=self.pts[self.target_loc][self.target_shape][P1],  # type: ignore[known-attribute]
-            p2=self.pts[self.target_loc][self.target_shape][P2],  # type: ignore[known-attribute]
+            center=self.locs[self.target_loc],  # type: ignore[known-attribute]
+            radius=self.sizes[TARGET][self.target_size] + self.sizes[BRIM],  # type: ignore[known-attribute]
+            thickness=self.sizes[BRIM],
         )
 
-        self.distractor_boundary = RectangleBoundary(
+        self.distractor_boundary = AnnulusBoundary(
             label=DISTRACTOR,
-            p1=self.pts[self.distractor_loc][self.distractor_shape][P1],  # type: ignore[known-attribute]
-            p2=self.pts[self.distractor_loc][self.distractor_shape][P2],  # type: ignore[known-attribute]
+            center=self.locs[self.distractor_loc],  # type: ignore[known-attribute]
+            radius=self.sizes[TARGET][self.distractor_size] + self.sizes[BRIM],  # type: ignore[known-attribute]
+            thickness=self.sizes[BRIM],
         )
 
         self.bounds = BoundarySet(
@@ -262,8 +217,8 @@ class GripApertureRedux(klibs.Experiment):
             self.block_dir,
             P.trial_number,
             self.target_loc,  # type: ignore[known-attribute]
-            self.target_shape,  # type: ignore[known-attribute]
-            self.distractor_shape,  # type: ignore[known-attribute]
+            self.target_size,  # type: ignore[known-attribute]
+            self.distractor_size,  # type: ignore[known-attribute]
         )
 
         self.nnc.startup()  # start marker tracking
@@ -362,8 +317,8 @@ class GripApertureRedux(klibs.Experiment):
             'practicing': P.practicing,
             'task_type': self.block_task,
             'target_loc': self.target_loc,  # type: ignore[known-attribute]
-            'target_shape': self.target_shape,  # type: ignore[known-attribute]
-            'distractor_shape': self.distractor_shape,  # type: ignore[known-attribute]
+            'target_size': self.target_size,  # type: ignore[known-attribute]
+            'distractor_size': self.distractor_size,  # type: ignore[known-attribute]
             'go_signal_onset': go_signal_onset_time,
             'distance_threshold': (
                 self.reach_threshold if self.block_task == GBYK else NA
@@ -423,15 +378,15 @@ class GripApertureRedux(klibs.Experiment):
                 location=[P.screen_c[0], P.screen_c[1] // 3],  # type: ignore[known-attribute]
             )
 
-        distractor_holder = self.placeholders[DISTRACTOR][self.distractor_shape]  # type: ignore[known-attribute]
+        distractor_holder = self.placeholders[DISTRACTOR][self.distractor_size]  # type: ignore[known-attribute]
         distractor_holder.fill = GRUE
 
         if not target:
-            target_holder = self.placeholders[DISTRACTOR][self.target_shape]  # type: ignore[known-attribute]
+            target_holder = self.placeholders[DISTRACTOR][self.target_size]  # type: ignore[known-attribute]
             target_holder.fill = GRUE
 
         else:
-            target_holder = self.placeholders[TARGET][self.target_shape]  # type: ignore[known-attribute]
+            target_holder = self.placeholders[TARGET][self.target_size]  # type: ignore[known-attribute]
             target_holder.fill = WHITE
 
         blit(
@@ -441,46 +396,6 @@ class GripApertureRedux(klibs.Experiment):
         )
 
         blit(target_holder, registration=5, location=self.locs[self.target_loc])  # type: ignore[known-attribute]
-
-        if P.development_mode:
-            if not prep:
-                blit(self.cursor, registration=5, location=self.get_hand_pos())
-            blit(
-                self.tl_right,
-                registration=5,
-                location=self.pts[RIGHT][
-                    self.target_shape
-                    if self.target_loc == RIGHT
-                    else self.distractor_shape
-                ][P1],
-            )
-            blit(
-                self.br_right,
-                registration=5,
-                location=self.pts[RIGHT][
-                    self.target_shape
-                    if self.target_loc == RIGHT
-                    else self.distractor_shape
-                ][P2],
-            )
-            blit(
-                self.tl_left,
-                registration=5,
-                location=self.pts[LEFT][
-                    self.target_shape
-                    if self.target_loc == LEFT
-                    else self.distractor_shape
-                ][P1],
-            )
-            blit(
-                self.br_left,
-                registration=5,
-                location=self.pts[LEFT][
-                    self.target_shape
-                    if self.target_loc == LEFT
-                    else self.distractor_shape
-                ][P2],
-            )
 
         flip()
 
@@ -509,48 +424,6 @@ class GripApertureRedux(klibs.Experiment):
                 for marker in marker_set.get('markers', None):  # type: ignore[iterable]
                     if marker is not None:
                         writer.writerow(marker)
-
-    def calc_boundary_pts(self, loc, shape):
-        """
-        Calculate goalzone region, entry serves as proxy for object grasping.
-        Due to grasp shape, averaged hand pos often falls below objects.
-        Crudely compensates by extending obj boundaries a 1/2 handwidth (ballpark) downwards.
-            (by crudely I mean both the solution and the implementation)
-        """
-
-        # I'm sorry that you have to read this
-        if loc == LEFT:
-            top_left = (0, 0)
-            bot_right = (
-                P.screen_c[0]
-                - self.px_offset
-                + (self.shapes[shape][0] // 2)
-                + (
-                    # goalzone was a terrible choice of name
-                    # the boundary extends slightly beyond inner-bottom edge of object
-                    P.goalzone_padding['side']  # type: ignore[known-attribute]
-                    * self.px_cm
-                ),
-                P.screen_c[1]
-                + (self.shapes[shape][1] // 2)
-                + (P.goalzone_padding['bottom'] * self.px_cm),  # type: ignore[known-attribute]
-            )
-        else:
-            top_left = (
-                P.screen_c[0]
-                + self.px_offset
-                - (self.shapes[shape][0] // 2)
-                - (P.goalzone_padding['side'] * self.px_cm),  # type: ignore[known-attribute]
-                0,
-            )
-            bot_right = (
-                P.screen_x,
-                P.screen_c[1]
-                + (self.shapes[shape][1] // 2)
-                + (P.goalzone_padding['bottom'] * self.px_cm),  # type: ignore[known-attribute]
-            )
-
-        return {P1: top_left, P2: bot_right}
 
     def _ensure_dir_exists(self, path):
         """Create directory if it doesn't exist. Raises exception on failure."""
@@ -581,12 +454,12 @@ class GripApertureRedux(klibs.Experiment):
         block_dir,
         trial_num,
         target_loc,
-        target_orient,
-        distractor_orient,
+        target_size,
+        distractor_size,
     ):
         """Construct trial data filename."""
         # TODO: markup file with factor levels instead of shoehorning into filename
-        filename = f'trial_{trial_num}_tSide_{target_loc}_tShape{target_orient}_dShape_{distractor_orient}_markers.csv'
+        filename = f'trial_{trial_num}_tSide_{target_loc}_tSize_{target_size}_dSize_{distractor_size}_markers.csv'
         return os.path.join(block_dir, filename)
 
     def _validate_trial_data_file(self, filepath):
